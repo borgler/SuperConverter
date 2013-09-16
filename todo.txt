@@ -1,9 +1,5 @@
-Add better error notification (red in menubar)
-
-*Add recent folders menu
-
-*Add saveable image configurations
-
-
-
-? Support palette (tRNS chunk) transparency in PNG. (Hard, because it requires alpha dithering)
+ * Add renaming/resizing capabilities in the "Modify" tab
+ * Make the current folder display text selectable/editable
+ * Add recent folders button (hourglass icon?)
+ * Add saveable image configurations
+ * ? Support palette (tRNS chunk) transparency in PNG. (Hard, because it requires alpha dithering)
