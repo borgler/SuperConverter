@@ -1,0 +1,9 @@
+Add better error notification (red in menubar)
+
+*Add recent folders menu
+
+*Add saveable image configurations
+
+
+
+? Support palette (tRNS chunk) transparency in PNG. (Hard, because it requires alpha dithering)
