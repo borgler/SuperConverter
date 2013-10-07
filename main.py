@@ -10,6 +10,8 @@ from functools import partial
 from multiprocessing import freeze_support
 
 import wx
+from wx.lib.intctrl import IntCtrl
+from PIL import Image
 
 import images
 import shared
@@ -27,12 +29,12 @@ class FilePanel(wx.Panel):
         # Set up buttons
         srcButton = wx.Button(parent=self, label='&Source Folder')
         srcButton.Bind(wx.EVT_BUTTON, partial(self.OnFolder, mode='src_dir'))
-        srcText = wx.StaticText(parent=self, label=os.path.abspath(
+        srcText = wx.StaticText(parent=self, label=(
                                          shared.options.get('src_dir', '')))
         
         destButton = wx.Button(parent=self, label='&Destination Folder')
         destButton.Bind(wx.EVT_BUTTON, partial(self.OnFolder, mode='dest_dir'))
-        destText = wx.StaticText(parent=self, label=os.path.abspath(
+        destText = wx.StaticText(parent=self, label=(
                                          shared.options.get('dest_dir', '')))
 
         self.textDict = {'src_dir': srcText, 'dest_dir': destText}
@@ -162,6 +164,8 @@ class FormatPanel(wx.Panel):
 
 
 class ModifyPanel(wx.Panel):
+    filter_dict = {'Nearest': Image.NEAREST, 'Bilinear': Image.BILINEAR,
+                   'Bicubic': Image.BICUBIC, 'Antialias': Image.ANTIALIAS}
     def __init__(self, parent):       
         wx.Panel.__init__(self, parent)
         self.SetBackgroundColour((255, 255, 255))
@@ -169,28 +173,184 @@ class ModifyPanel(wx.Panel):
 
         renameCheckBox = wx.CheckBox(parent=self,
                                      label='Rename Converted Images')
+        renameCheckBox.SetValue(shared.options.get('rename', False))
+
+        extCheckBox = wx.CheckBox(parent=self,
+                                     label='Automatically Add File Extensions')
+        extCheckBox.Bind(wx.EVT_CHECKBOX,
+                         partial(self.OnCheckBox, attr='extensions',
+                                 ctrl=extCheckBox))
+        extCheckBox.SetValue(shared.options.get('extensions', True))
         
         labeledRename = LabeledWidget(parent=self, cls=wx.TextCtrl,
                                       label='Rename Pattern',
                                       style=wx.TE_PROCESS_ENTER)
         renameCtrl = labeledRename.widget
+        renameCtrl.SetValue(shared.options.get('renameText', ''))
+        OnRenameText = partial(self.OnTextCtrl, attr='renameText',
+                               ctrl=renameCtrl)
+        renameCtrl.Bind(wx.EVT_TEXT_ENTER, OnRenameText)
+        renameCtrl.Bind(wx.EVT_KILL_FOCUS, OnRenameText)
+
+        # Rename help
+        rename_help = ('''<NAME> = original name, 
+<EXT> = original file extension, 
+<N+1> = for numbering starting from 1,
+or <N+4> or <(N+3)*6> and so on.
+Put a number, PAD, or NOPAD, followed by a ";",
+before numbering to adjust numerical padding (like <3;N+1>)''')
+        def onHelp(event):
+            renameCtrl.SetToolTipString(rename_help)
+        wx.ToolTip.SetDelay(15)
+        renameCtrl.Bind(wx.wx.EVT_MOTION, onHelp)
+
+        # Last, so the other controls will enable/disable with the checkbox
+        onRename = partial(self.OnCheckBox, attr='rename', ctrl=renameCheckBox,
+                           related=[extCheckBox, labeledRename])
+        renameCheckBox.Bind(wx.EVT_CHECKBOX, onRename)
+        onRename(None)
+
+
+        resizeCheckBox = wx.CheckBox(parent=self,
+                                     label='Resize Converted Images')
+        resizeCheckBox.SetValue(shared.options.get('resize', False))
+
+        aspectCheckBox = wx.CheckBox(parent=self,
+                                     label='Maintain Aspect Ratio')
+        aspectCheckBox.SetValue(shared.options.get('maintainRatio', False))
+        onAspect = partial(self.OnCheckBox, attr='maintainRatio',
+                           ctrl=aspectCheckBox)
+        aspectCheckBox.Bind(wx.EVT_CHECKBOX, onAspect)
+        
+        
+        labeledWidth = LabeledWidget(parent=self, cls=IntCtrl,
+                                     label='Width',
+                                     style=wx.TE_PROCESS_ENTER,
+                                     value=shared.options.get('resizeWidth',
+                                                              1000),
+                                     limited=True,
+                                     min=0)
+        widthCtrl = labeledWidth.widget
+        OnWidth = partial(self.OnTextCtrl, attr='resizeWidth', ctrl=widthCtrl)
+        widthCtrl.Bind(wx.EVT_TEXT_ENTER, OnWidth)
+        widthCtrl.Bind(wx.EVT_KILL_FOCUS, OnWidth)
+        
+        labeledHeight = LabeledWidget(parent=self, cls=IntCtrl,
+                                     label='Height',
+                                     style=wx.TE_PROCESS_ENTER,
+                                     value=shared.options.get('resizeHeight',
+                                                              1000),
+                                     limited=True,
+                                     min=0)
+        heightCtrl = labeledHeight.widget
+        OnHeight = partial(self.OnTextCtrl, attr='resizeHeight',
+                           ctrl=heightCtrl)
+        heightCtrl.Bind(wx.EVT_TEXT_ENTER, OnHeight)
+        heightCtrl.Bind(wx.EVT_KILL_FOCUS, OnHeight)
+
+        labeledFilter = LabeledWidget(parent=self, cls=wx.Choice,
+                                         label='Resize Filter')
+        filterChoice = labeledFilter.widget
+        SetupChoice(filterChoice,
+                    ['Nearest', 'Bilinear', 'Bicubic', 'Antialias'],
+                    shared.options.setdefault('resizeFilter', Image.ANTIALIAS),
+                    self.filter_dict)
+        filterChoice.Bind(wx.EVT_CHOICE, partial(self.OnChoice,
+                                                 attr='resizeFilter',
+                                                 edict=self.filter_dict))
+
+
+        # Last, so the other controls will enable/disable with the checkbox
+        onResize = partial(self.OnCheckBox, attr='resize', ctrl=resizeCheckBox,
+                           related=[labeledWidth, aspectCheckBox,
+                                    labeledHeight, labeledFilter])
+        resizeCheckBox.Bind(wx.EVT_CHECKBOX, onResize)
+        onResize(None)
+        
 
         # Sizer stuff
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.sizer.AddStretchSpacer(prop=1)
 
-        self.sizer.Add(renameCheckBox, flag=wx.CENTER)
+        hSizer = wx.BoxSizer(wx.HORIZONTAL)
+        hSizer.AddStretchSpacer(prop=1)
+        hSizer.Add(renameCheckBox, flag=wx.CENTER)
+        AddLinearSpacer(hSizer, 10)
+        hSizer.Add(extCheckBox, flag=wx.CENTER)
+        hSizer.AddStretchSpacer(prop=1)
+        self.sizer.Add(hSizer, flag=wx.CENTER)
+
         AddLinearSpacer(self.sizer, 10)
         self.sizer.Add(labeledRename, flag=wx.CENTER)
+        
+        AddLinearSpacer(self.sizer, 20)
+
+        hSizer = wx.BoxSizer(wx.HORIZONTAL)
+        hSizer.AddStretchSpacer(prop=1)
+        hSizer.Add(resizeCheckBox, flag=wx.CENTER)
+        AddLinearSpacer(hSizer, 10)
+        hSizer.Add(aspectCheckBox, flag=wx.CENTER)
+        hSizer.AddStretchSpacer(prop=1)
+        self.sizer.Add(hSizer, flag=wx.CENTER)
+
+        hSizer = wx.BoxSizer(wx.HORIZONTAL)
+        hSizer.AddStretchSpacer(prop=1)
+        hSizer.Add(labeledWidth, flag=wx.CENTER)
+        AddLinearSpacer(hSizer, 10)
+        hSizer.Add(labeledHeight, flag=wx.CENTER)
+        hSizer.AddStretchSpacer(prop=1)
+        self.sizer.Add(hSizer, flag=wx.CENTER)
+        
+        hSizer = wx.BoxSizer(wx.HORIZONTAL)
+        hSizer.AddStretchSpacer(prop=1)
+        hSizer.Add(labeledWidth, flag=wx.CENTER)
+        AddLinearSpacer(hSizer, 10)
+        hSizer.Add(labeledHeight, flag=wx.CENTER)
+        hSizer.AddStretchSpacer(prop=1)
+        self.sizer.Add(hSizer, flag=wx.CENTER)
+        
+        AddLinearSpacer(self.sizer, 10)
+        self.sizer.Add(labeledFilter, flag=wx.CENTER)
 
         self.sizer.AddStretchSpacer(prop=1)
 
         #Layout sizers
         self.SetSizer(self.sizer)
         self.SetAutoLayout(1)
-        
 
-class MainWindow(wx.Frame):
+    def OnTextCtrl(self, e, attr, ctrl):
+        self.GetParent().SetFocus()
+        shared.options[attr] = ctrl.GetValue()
+        save_data(shared.options)
+
+    def OnCheckBox(self, event, attr, ctrl, related=[]):
+        checked = ctrl.IsChecked()
+        shared.options[attr] = checked
+        for item in related:
+            item.Enable(checked)
+        save_data(shared.options)
+
+    def OnChoice(self, event, attr, edict=None):
+        shared.options[attr] = edict[event.GetString()]
+        save_data(shared.options)
+        
+        
+class FocusMixIn(wx.Window):
+    def prepareFrame(self, closeEventHandler=None):
+        self._closeHandler = closeEventHandler
+        EVT_CLOSE(self, self.closeFrame)
+
+    def closeFrame(self, event):
+        win = wxWindow_FindFocus()
+        if win != None:
+            win.Disconnect(-1, -1, wxEVT_KILL_FOCUS)
+        if self._closeHandler != None:
+            self._closeHandler(event)
+        else:
+            event.Skip()
+
+
+class MainWindow(wx.Frame, FocusMixIn):
     def __init__(self, *args, **kwargs):
         wx.Frame.__init__(self, *args, **kwargs)
         shared.options.update(load_data())
