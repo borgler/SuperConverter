@@ -10,6 +10,7 @@ from io import BytesIO
 from StringIO import StringIO
 from itertools import izip_longest
 from multiprocessing import Pool
+from functools import partial
 
 from PIL import Image, ImageChops
 import PIL.PngImagePlugin
@@ -23,6 +24,7 @@ import png
 from psd_tools import PSDImage
 
 import shared
+import rename
 
 
 def is_grayscale(im):
@@ -55,7 +57,8 @@ def prepare_dir(dest_dir, clear_dest=False):
         os.makedirs(dest_dir)
 
 
-def convert_image(src_dir, dest_dir, format, filename, format_dict):
+def convert_image(src_dir, dest_dir, format, filename, format_dict, rename_dict,
+                  extensions, size, resize_filter, maintain_ratio):
     try:
         name, ext = os.path.splitext(filename)
         ext = ext.lower()
@@ -66,7 +69,6 @@ def convert_image(src_dir, dest_dir, format, filename, format_dict):
             im = psd.as_PIL()
         else:
             im = Image.open(filepath)
-        orig_im = im
 
         if format == 'Smart':
             if is_grayscale(im):
@@ -115,14 +117,24 @@ def convert_image(src_dir, dest_dir, format, filename, format_dict):
                 im = im.convert(colormode)
         if format:  
             #im.info = {}
-            dest_path = os.path.join(dest_dir, name)
+            if size:
+                if maintain_ratio:
+                    im.thumbnail(size, resize_filter)
+                else:
+                    im = im.resize(size, resize_filter)
             
-            new_ext = shared.extension_dict.get(format,
-                                                '.' + format.lower())
-            dest_path += new_ext
+            if rename_dict:
+                name = rename_dict.get(filename)
+            dest_path = os.path.join(dest_dir, name)
+
+            if (rename_dict is None) or extensions:
+                new_ext = shared.extension_dict.get(format,
+                                                    '.' + format.lower())
+                dest_path += new_ext
+                
             if (options.get('interlace') or options.get('bits', 8) != 8
                 or options.get('optimize')):
-                save_as_PNG(im, orig_im, dest_path, options)
+                save_as_PNG(im, dest_path, options)
             else:
                 im.save(dest_path, format, **options)
     except BaseException as e:
@@ -130,11 +142,13 @@ def convert_image(src_dir, dest_dir, format, filename, format_dict):
     return filename, None
             
 
+class Stats(object):
+    image_num = 0
+    image_count = 0
+
 def convert_folder(src_dir, dest_dir, format='JPEG', archive=False,
                    clear_dest=False, callback=True, **kwargs):
-    old_stdout = sys.stdout
     err_log = StringIO()
-    sys.stdout = err_log
     
     prepare_dir(dest_dir, clear_dest)
     if archive:
@@ -151,36 +165,69 @@ def convert_folder(src_dir, dest_dir, format='JPEG', archive=False,
         if ext in shared.filetypes:
             image_files.append(filename)
 
-    global image_count, image_num
-    image_num = len(image_files)
-    image_count = 0
+    image_files = sorted(image_files, key=rename.sortkey)
+
+    stats = Stats()
+    stats.image_num = len(image_files)
+    stats.image_count = 0
+    rename.image_num = stats.image_num
+    
+    if shared.options.get('rename'):
+        rename_dict = {}
+        for counter, filename in enumerate(image_files):
+            name, ext = os.path.splitext(filename)
+            replace = partial(rename.replace,
+                              {'ext': ext, 'name': name, 'n': counter})
+            rename_dict[filename] = re.sub('<(.*?)>', replace,
+                                           shared.options.get('renameText', ''))
+    else:
+        rename_dict = None
 
     def convert_callback(results):
         filename, exception = results
-        global image_count, image_num
         if exception:
-            print('Failed to process ' + filename)
-            print(''.join(traceback.format_exception_only(type(exception),
-                                                          exception)))
-            image_num -= 1
+            err_log.write('Failed to process ' + filename)
+            error = ''.join(traceback.format_exception_only(type(exception),
+                                                            exception))
+            err_log.write(error)
+            stats.image_num -= 1
         else:
-            image_count += 1
-        if image_count >= image_num:
-            old_stdout.write(err_log.getvalue())
-            sys.stdout = old_stdout
+            stats.image_count += 1
+        if stats.image_count >= stats.image_num:
+            err_log_str = err_log.getvalue()
+            if err_log_str:
+                print(err_log_str)
+        filename += ' (%d/%d)' % (stats.image_count, stats.image_num)
             
         callback(filename, exception)
         
     for filename in image_files:
         try:
+            if shared.options.get('resize'):
+                size = (shared.options.get('resizeWidth', 1000),
+                        shared.options.get('resizeHeight', 1000))
+                resize_filter = shared.options.get('resizeFilter',
+                                                   Image.NEAREST)
+                maintain_ratio = shared.options.get('maintainRatio', False)
+            else:
+                size = None
+                resize_filter = None
+                maintain_ratio = None
+
             result = pool.apply_async(convert_image, (src_dir, dest_dir,
                                                       format, filename,
-                                                      shared.format_dict),
+                                                      shared.format_dict,
+                                                      rename_dict,
+                                                      shared.options.get(
+                                                          'extensions'),
+                                                      size,
+                                                      resize_filter,
+                                                      maintain_ratio),
                                       callback=convert_callback)
             
         except:
-            print('failed to process %s%s' % (name, ext))
-            print(''.join(traceback.format_exception(*sys.exc_info())))
+            err_log.write('failed to process %s%s' % (name, ext))
+            err_log.write(''.join(traceback.format_exception(*sys.exc_info())))
             pass
  
     if archive:
@@ -222,7 +269,7 @@ def grouper(iterable, n, fillvalue=None):
     return izip_longest(fillvalue=fillvalue, *args)
 
 
-def save_as_PNG(im, orig_im, filename, options):
+def save_as_PNG(im, filename, options):
     colormode = options.get('colormode')
     transparent = options.get('transparent')
     greyscale = ('L' in im.mode or '1' in im.mode)
